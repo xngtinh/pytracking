@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 
 
-_tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
+_tracker_disp_colors = {1: (0, 0, 255), 2: (0, 255, 0), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
                         7: (123, 123, 123), 8: (255, 128, 0), 9: (128, 0, 255)}
 
@@ -321,9 +321,19 @@ class Tracker:
         ui_control = UIControl()
 
         display_name = 'Display: ' + self.name
+        cap = cv.VideoCapture(videofilepath)
+        frame_width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+        frame_rate = cap.get(cv.CAP_PROP_FPS)
+
         cv.namedWindow(display_name, cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
-        cv.resizeWindow(display_name, 960, 720)
+        cv.resizeWindow(display_name, frame_width, frame_height)
         cv.setMouseCallback(display_name, ui_control.mouse_callback)
+
+        video_name = "webcam" if videofilepath is None else Path(videofilepath).stem
+        video_results_path = os.path.join(self.results_dir, 'output_{}.avi'.format(video_name))
+        video_out = cv.VideoWriter(video_results_path, cv.VideoWriter_fourcc(*'MJPG'),
+                        frame_rate, (frame_width, frame_height))
 
         frame_number = 0
 
@@ -340,6 +350,7 @@ class Tracker:
 
         next_object_id = 1
         sequence_object_ids = []
+        conf_score = []
         prev_output = OrderedDict()
         output_boxes = OrderedDict()
 
@@ -388,7 +399,7 @@ class Tracker:
 
             # Draw box
             if ui_control.mode == 'select':
-                cv.rectangle(frame_disp, ui_control.get_tl(), ui_control.get_br(), (255, 0, 0), 2)
+                cv.rectangle(frame_disp, ui_control.get_tl(), ui_control.get_br(), (0, 0, 255), 3)
 
             if len(sequence_object_ids) > 0:
                 info['sequence_object_ids'] = sequence_object_ids
@@ -409,23 +420,29 @@ class Tracker:
                     for obj_id, state in out['target_bbox'].items():
                         state = [int(s) for s in state]
                         cv.rectangle(frame_disp, (state[0], state[1]), (state[2] + state[0], state[3] + state[1]),
-                                     _tracker_disp_colors[obj_id], 5)
+                                     _tracker_disp_colors[obj_id], 3)
                         if save_results:
                             output_boxes[obj_id].append(state)
 
-            # Put text
-            font_color = (255, 255, 255)
-            msg = "Select target(s). Press 'r' to reset or 'q' to quit."
-            cv.rectangle(frame_disp, (5, 5), (630, 40), (50, 50, 50), -1)
-            cv.putText(frame_disp, msg, (10, 30), cv.FONT_HERSHEY_COMPLEX_SMALL, 1, font_color, 2)
+                if 'object_presence_score' in out:
+                    conf_score.append(out['object_presence_score'].get(1))
 
-            if videofilepath is not None:
-                msg = "Press SPACE to pause/resume the video."
-                cv.rectangle(frame_disp, (5, 50), (530, 90), (50, 50, 50), -1)
-                cv.putText(frame_disp, msg, (10, 75), cv.FONT_HERSHEY_COMPLEX_SMALL, 1, font_color, 2)
+                video_out.write(frame_out)
+
+            # # Put text
+            # font_color = (255, 255, 255)
+            # msg = "Select target(s). Press 'r' to reset or 'q' to quit."
+            # cv.rectangle(frame_disp, (5, 5), (630, 40), (50, 50, 50), -1)
+            # cv.putText(frame_disp, msg, (10, 30), cv.FONT_HERSHEY_COMPLEX_SMALL, 1, font_color, 2)
+
+            # if videofilepath is not None:
+            #     msg = "Press SPACE to pause/resume the video."
+            #     cv.rectangle(frame_disp, (5, 50), (530, 90), (50, 50, 50), -1)
+            #     cv.putText(frame_disp, msg, (10, 75), cv.FONT_HERSHEY_COMPLEX_SMALL, 1, font_color, 2)
 
             # Display the resulting frame
             cv.imshow(display_name, frame_disp)
+            frame_out = cv.resize(frame_disp,(frame_width, frame_height))
             key = cv.waitKey(1)
             if key == ord('q'):
                 break
@@ -457,8 +474,17 @@ class Tracker:
             print(f"Save results to: {base_results_path}")
             for obj_id, bbox in output_boxes.items():
                 tracked_bb = np.array(bbox).astype(int)
-                bbox_file = '{}_{}.txt'.format(base_results_path, obj_id)
-                np.savetxt(bbox_file, tracked_bb, delimiter='\t', fmt='%d')
+                position_x = np.array([row[0] for row in tracked_bb])
+                position_y = np.array([row[1] for row in tracked_bb])
+                position_w = np.array([row[2] for row in tracked_bb])
+                position_h = np.array([row[3] for row in tracked_bb])
+                disp = position_x + position_w /2
+                bbox_file = '{}.txt'.format(base_results_path)
+                np.savetxt(bbox_file, np.c_[position_x, position_y, position_w, position_h], delimiter='\t', fmt='%d')
+
+            conf_score_path = os.path.join(self.results_dir, 'conf_score_{}'.format(video_name))
+            print(conf_score_path)
+            np.savetxt(conf_score_path, conf_score, delimiter='\t', fmt='%1.10f')
 
 
     def run_vot2020(self, debug=None, visdom_info=None):
